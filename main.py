@@ -3,16 +3,7 @@ import sqlite3
 import re
 import unicodedata
 
-# ==========
-# 1. Excel 読み込み
-# ==========
-
 INPUT_EXCEL = "授業概要.xlsx"   # ← 自分のファイル名に合わせて変更
-
-df = pd.read_excel(INPUT_EXCEL, header=5)
-df = df.dropna(how="all")
-# セル結合部分（区分など）を直前の値で埋める（推奨メソッド）
-df = df.ffill()
 
 # ==========
 # 2. 曜日・時限の解析ロジック
@@ -185,7 +176,8 @@ CREATE TABLE courses (
     required_or_choice TEXT,
     semester TEXT,
     description TEXT,
-    note TEXT
+    note TEXT,
+    sheet_name TEXT
 );
 
 CREATE TABLE course_times (
@@ -206,57 +198,75 @@ CREATE TABLE course_instructors (
 
 
 # ==========
-# 4. データ挿入
+# データ挿入
 # ==========
 
-for _, row in df.iterrows():
-    if _ == 2:  # 3行目（0始まり）
-        print("Excelセル内容:", row.get("曜時限\n教  室", ""))
+def insert_data(df):
+    # print("[DEBUG] df.columns:", df.columns)
+    for _, row in df.iterrows():
+        if sheet_name=='1教養教育(産業情報)':
+            print("[DEBUG] row:", row['区分'])
+        # courses へ
+        def safe_get(row, key):
+            return str(row[key]) if key in row and not pd.isna(row[key]) else None
 
-    # courses へ
-    # カラム名の存在確認と型変換
-    def safe_get(row, key):
-        return str(row[key]) if key in row and not pd.isna(row[key]) else None
+        # 実際のExcelカラム名に合わせてマッピング
+        data = (
+            safe_get(row, "区分"),
+            safe_get(row, "科目\n番号"),
+            safe_get(row, "授業科目"),
+            safe_get(row, "単位数"),
+            safe_get(row, "標準履修年次"),
+            safe_get(row, "必修\n・\n選択"),
+            safe_get(row, "実施学期"),
+            safe_get(row, "授　　業　　概　　要"),
+            safe_get(row, "　　備　考\n(対象専攻、教職免許\n の教科等)"),
+            row.get("sheet_name")
+        )
 
-    # 実際のExcelカラム名に合わせてマッピング
-    data = (
-        safe_get(row, "区分"),
-        safe_get(row, "科目\n番号"),
-        safe_get(row, "授業科目"),
-        safe_get(row, "単位数"),
-        safe_get(row, "標準履修年次"),
-        safe_get(row, "必修\n・\n選択"),
-        safe_get(row, "実施学期"),
-        safe_get(row, "授　　業　　概　　要"),
-        safe_get(row, "　　備　考\n(対象専攻、教職免許\n の教科等)")
-    )
+        c = cur.execute("""
+            INSERT INTO courses (
+                category, code, title, credits, grade,
+                required_or_choice, semester, description, note, sheet_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, data)
 
-    c = cur.execute("""
-        INSERT INTO courses (
-            category, code, title, credits, grade,
-            required_or_choice, semester, description, note
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, data)
+        course_id = c.lastrowid
 
-    course_id = c.lastrowid
+        # course_times へ（実際のカラム名で参照）
+        time_entries = parse_cell(row.get("曜時限\n教  室", ""))
+        for day, period, room, remarks in time_entries:
+            cur.execute("""
+                INSERT INTO course_times (course_id, day, period, room, remarks)
+                VALUES (?, ?, ?, ?, ?)
+            """, (course_id, day, period, room, remarks))
 
-    # course_times へ（実際のカラム名で参照）
-    time_entries = parse_cell(row.get("曜時限\n教  室", ""))
-    for day, period, room, remarks in time_entries:
-        cur.execute("""
-            INSERT INTO course_times (course_id, day, period, room, remarks)
-            VALUES (?, ?, ?, ?, ?)
-        """, (course_id, day, period, room, remarks))
+        # course_instructors へ（実際のカラム名で参照）
+            insts = re.split(r"[,、，/・･\n]+", str(row.get("担当教員", "")))
+            exclude_words = ['教員', '他', '情報', '建築', '機械', 'デザイン', '支援','コース','担当','全員']
+            for inst in [i.strip() for i in insts if i.strip()]:
+                inst_hankaku = unicodedata.normalize('NFKC', inst)
+                # 日本人名らしさ判定（2文字以上、ひらがな・カタカナ・漢字のみ、指定ワード除外）
+                if len(inst_hankaku) >= 2 and re.fullmatch(r'[ぁ-んァ-ヶ一-龥々ー]+', inst_hankaku):
+                    if not any(word in inst_hankaku for word in exclude_words):
+                        cur.execute("""
+                            INSERT INTO course_instructors (course_id, instructor)
+                            VALUES (?, ?)
+                        """, (course_id, inst_hankaku))
 
-    # course_instructors へ（実際のカラム名で参照）
-    insts = re.split(r"[,、，/・･\n]+", str(row.get("担当教員", "")))
-    for inst in [i.strip() for i in insts if i.strip()]:
-        # 教員名も半角正規化
-        inst_hankaku = unicodedata.normalize('NFKC', inst)
-        cur.execute("""
-            INSERT INTO course_instructors (course_id, instructor)
-            VALUES (?, ?)
-        """, (course_id, inst_hankaku))
+
+# ==========
+# Excel 読み込み
+# ==========
+
+sheets = pd.read_excel(INPUT_EXCEL, header=5, sheet_name=None)
+
+for sheet_name, df in sheets.items():
+    df = df.dropna(how="all")
+    df = df.ffill()
+    df["sheet_name"] = sheet_name
+    print("[DEBUG] Processing sheet:", sheet_name)
+    insert_data(df)
 
 conn.commit()
 conn.close()
