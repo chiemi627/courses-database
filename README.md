@@ -39,3 +39,30 @@
 - Excelの各シートごとに`sheet_name`で区別
 - 担当教員は複数名対応
 - 時間割（曜日・時限・教室）は複数対応
+
+## 前処理
+- 全てのシートはヘッダーが６行目になるようにしてください
+- 全てのシートは区分がA列になるようにしてください
+
+## 実行方法
+
+1. 必要なライブラリをインストール
+
+```sh
+pip install pandas openpyxl
+```
+
+2. スクリプトを実行
+
+Excelファイル名を指定（省略時は「授業概要.xlsx」）
+
+```sh
+python3 main.py [Excelファイル名.xlsx]
+```
+
+例:
+```sh
+python3 main.py sample.xlsx
+```
+
+実行後、`courses.db` というSQLiteデータベースが生成されます。
